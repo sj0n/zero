@@ -444,16 +444,32 @@ func runExec(args []string, stdout io.Writer, stderr io.Writer, deps appDeps) in
 	// model (resolved.Provider.Model), not the override. Without an explicit
 	// --model the override model is empty, so checking it here would silently
 	// skip the advisory even though the run uses a concrete effective model.
-	if runReasoningEffort != "" {
-		if notice := reasoningEffortNotice(modelRegistry, resolved.Provider.Model, runReasoningEffort); notice != "" {
-			if _, err := fmt.Fprintln(stderr, notice); err != nil {
-				return exitCrash
+	forwardEffort := ""
+	configuredEfforts, configured := resolved.Provider.ConfiguredReasoningEfforts(resolved.Provider.Model)
+	if resolved.Provider.ProviderKind == config.ProviderKindOpenAICompatible && configured {
+		if runReasoningEffort != "" && !strings.EqualFold(strings.TrimSpace(runReasoningEffort), "auto") {
+			for _, effort := range configuredEfforts {
+				if strings.EqualFold(effort, strings.TrimSpace(runReasoningEffort)) {
+					forwardEffort = effort
+					break
+				}
+			}
+			if forwardEffort == "" {
+				if _, err := fmt.Fprintf(stderr, "reasoning effort %q is not configured for %s; ignoring it\n", runReasoningEffort, resolved.Provider.Model); err != nil {
+					return exitCrash
+				}
 			}
 		}
+	} else {
+		if runReasoningEffort != "" {
+			if notice := reasoningEffortNotice(modelRegistry, resolved.Provider.Model, runReasoningEffort); notice != "" {
+				if _, err := fmt.Fprintln(stderr, notice); err != nil {
+					return exitCrash
+				}
+			}
+		}
+		forwardEffort = forwardedReasoningEffort(modelRegistry, resolved.Provider.Model, runReasoningEffort)
 	}
-	// Effort to forward on the provider request, gated to the resolved model's
-	// supported levels (empty for non-reasoning models).
-	forwardEffort := forwardedReasoningEffort(modelRegistry, resolved.Provider.Model, runReasoningEffort)
 
 	provider, err := buildProvider(resolved, deps)
 	if err != nil {

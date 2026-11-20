@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/Twigpine/zero/internal/aimlapi"
 	"github.com/Twigpine/zero/internal/modelregistry"
@@ -578,6 +579,15 @@ func mergeProfile(base ProviderProfile, next ProviderProfile) ProviderProfile {
 	if next.Model != "" {
 		base.Model = next.Model
 	}
+	if next.Models != nil {
+		base.Models = make([]ProviderModel, len(next.Models))
+		for i, model := range next.Models {
+			base.Models[i] = model
+			if model.ReasoningEfforts != nil {
+				base.Models[i].ReasoningEfforts = append([]string{}, model.ReasoningEfforts...)
+			}
+		}
+	}
 	if next.Description != "" {
 		base.Description = next.Description
 	}
@@ -1042,6 +1052,37 @@ func normalizeProvider(profile ProviderProfile, env map[string]string, options n
 	profile.AuthScheme = strings.TrimSpace(profile.AuthScheme)
 	profile.AuthHeaderValue = strings.TrimSpace(profile.AuthHeaderValue)
 	profile.Model = strings.TrimSpace(profile.Model)
+	// Copy nested slices before normalization so resolving a profile never mutates
+	// the caller's configuration or a profile shared by another session.
+	if profile.Models != nil {
+		models := make([]ProviderModel, len(profile.Models))
+		copy(models, profile.Models)
+		for i := range models {
+			if models[i].ReasoningEfforts != nil {
+				models[i].ReasoningEfforts = append([]string{}, models[i].ReasoningEfforts...)
+			}
+		}
+		profile.Models = models
+	}
+	seenModels := map[string]bool{}
+	for i := range profile.Models {
+		model := &profile.Models[i]
+		model.ID = strings.TrimSpace(model.ID)
+		if model.ID == "" || seenModels[model.ID] {
+			return ProviderProfile{}, providerError(profile, "provider %s has an empty or duplicate model id %q", profile.Name, model.ID)
+		}
+		seenModels[model.ID] = true
+		seenEfforts := map[string]bool{}
+		for j, raw := range model.ReasoningEfforts {
+			effort := strings.TrimSpace(raw)
+			key := strings.ToLower(effort)
+			if effort == "" || key == "auto" || key == "list" || seenEfforts[key] || strings.IndexFunc(effort, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+				return ProviderProfile{}, providerError(profile, "provider %s model %q has an invalid or duplicate reasoning effort %q", profile.Name, model.ID, effort)
+			}
+			model.ReasoningEfforts[j] = effort
+			seenEfforts[key] = true
+		}
+	}
 
 	if profile.Name == "" {
 		profile.Name = string(ProviderKindOpenAI)

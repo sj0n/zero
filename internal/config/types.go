@@ -40,8 +40,29 @@ type ProviderProfile struct {
 	AuthHeaderValue string            `json:"authHeaderValue,omitempty"`
 	CustomHeaders   map[string]string `json:"customHeaders,omitempty"`
 	Model           string            `json:"model,omitempty"`
+	Models          []ProviderModel   `json:"models,omitempty"`
 	ParseThinkTags  *bool             `json:"parseThinkTags,omitempty"`
 	Description     string            `json:"description,omitempty"`
+}
+
+// ProviderModel describes a model available through one provider profile.
+// A nil ReasoningEfforts uses discovery; an empty slice explicitly disables it.
+type ProviderModel struct {
+	ID               string   `json:"id"`
+	ReasoningEfforts []string `json:"reasoningEfforts,omitzero"`
+}
+
+// ConfiguredReasoningEfforts returns the explicit levels for the exact model ID.
+func (profile ProviderProfile) ConfiguredReasoningEfforts(model string) ([]string, bool) {
+	if effectiveProviderKind(profile) != ProviderKindOpenAICompatible {
+		return nil, false
+	}
+	for _, entry := range profile.Models {
+		if entry.ID == model && entry.ReasoningEfforts != nil {
+			return entry.ReasoningEfforts, true
+		}
+	}
+	return nil, false
 }
 
 func HasProviderProfile(profile ProviderProfile) bool {
@@ -58,6 +79,7 @@ func HasProviderProfile(profile ProviderProfile) bool {
 		strings.TrimSpace(profile.AuthHeaderValue) != "" ||
 		profile.CustomHeaders != nil ||
 		strings.TrimSpace(profile.Model) != "" ||
+		profile.Models != nil ||
 		profile.ParseThinkTags != nil ||
 		strings.TrimSpace(profile.Description) != ""
 }
@@ -822,6 +844,7 @@ func (profile *ProviderProfile) UnmarshalJSON(data []byte) error {
 		CustomHeaders        map[string]string `json:"customHeaders"`
 		CustomHeadersSnake   map[string]string `json:"custom_headers"`
 		Model                string            `json:"model"`
+		Models               []ProviderModel   `json:"models"`
 		ModelID              string            `json:"model_id"`
 		ParseThinkTags       *bool             `json:"parseThinkTags"`
 		ParseThinkTagsSnake  *bool             `json:"parse_think_tags"`
@@ -847,6 +870,7 @@ func (profile *ProviderProfile) UnmarshalJSON(data []byte) error {
 	profile.AuthHeaderValue = firstNonEmpty(raw.AuthHeaderValue, raw.AuthHeaderValueSnake)
 	profile.CustomHeaders = firstNonNilMap(raw.CustomHeaders, raw.CustomHeadersSnake)
 	profile.Model = strings.TrimSpace(firstNonEmpty(raw.Model, raw.ModelID))
+	profile.Models = raw.Models
 	profile.ParseThinkTags = firstNonNilBool(raw.ParseThinkTags, raw.ParseThinkTagsSnake)
 	profile.Description = strings.TrimSpace(raw.Description)
 	return nil

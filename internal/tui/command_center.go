@@ -519,7 +519,7 @@ func (m model) handleModelCommand(args string) (model, string, error) {
 	// reports a dropped preference nothing refilled (shown as a reset to
 	// auto).
 	var resetEffort bool
-	m, resetEffort = m.reconcileEffortForModelSwitch(target.reasoningEfforts, target.entry != nil)
+	m, resetEffort = m.reconcileEffortForModelSwitch(target.reasoningEfforts, target.entry != nil || target.effortsKnown)
 	effortLine := "effort: " + m.effortDisplay()
 	if resetEffort {
 		// Preference was dropped: show "auto" (model default applies), not a
@@ -602,13 +602,14 @@ func (m model) switchProviderModel(providerName, modelID string) (model, string,
 	m.providerName = target.Name
 	m.modelName = target.Model
 	m.serviceTier = ""
-	// An active profile's effort fill is per-model: re-derive it for the
-	// destination, exactly like handleModelCommand does. No generic
-	// unsupported-drop here: cross-provider targets are often custom models
-	// the catalog cannot vouch for either way, so an explicit preference is
-	// carried (pre-existing behavior) while the profile's own fill stays
-	// conservative — it only ever applies where support is known.
-	m = m.reconcileProfileAfterModelSwitch(m.availableReasoningEfforts())
+	// Configured levels are authoritative for the destination. For other
+	// cross-provider targets, retain an explicit preference because support may
+	// be unknown, while re-deriving an execution profile's conservative fill.
+	if _, configured := target.ConfiguredReasoningEfforts(target.Model); configured {
+		m, _ = m.reconcileEffortForModelSwitch(m.availableReasoningEfforts(), true)
+	} else {
+		m = m.reconcileProfileAfterModelSwitch(m.availableReasoningEfforts())
+	}
 	// Keep sub-agent child processes on the same provider we just switched to.
 	config.SetActiveProviderEnv(target.Name)
 	path := strings.TrimSpace(m.userConfigPath)
@@ -768,9 +769,25 @@ type modelSwitchTarget struct {
 	entry            *modelregistry.ModelEntry
 	notice           string
 	reasoningEfforts []modelregistry.ReasoningEffort
+	effortsKnown     bool
 }
 
 func (m model) resolveModelSwitchTarget(registry modelregistry.Registry, args string) (modelSwitchTarget, bool) {
+	for _, model := range m.providerProfile.Models {
+		if model.ID == strings.TrimSpace(args) {
+			target := modelSwitchTarget{modelID: model.ID}
+			if efforts, found := m.providerProfile.ConfiguredReasoningEfforts(model.ID); found {
+				target.effortsKnown = true
+				for _, effort := range efforts {
+					target.reasoningEfforts = append(target.reasoningEfforts, modelregistry.ReasoningEffort(effort))
+				}
+			} else if entry, found := registry.Get(model.ID); found {
+				target.entry = &entry
+				target.reasoningEfforts = registry.ReasoningEfforts(model.ID)
+			}
+			return target, true
+		}
+	}
 	entry, notice, ok := registry.ResolveWithFallback(args)
 	if ok {
 		return modelSwitchTarget{

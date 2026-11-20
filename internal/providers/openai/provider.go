@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Twigpine/zero/internal/providers/providerio"
+	"github.com/Twigpine/zero/internal/redaction"
 	"github.com/Twigpine/zero/internal/zeroruntime"
 )
 
@@ -66,6 +68,9 @@ type Options struct {
 	// on top for any endpoint.
 	DisablePromptCacheKey bool
 	SessionHeader         string
+	// ReasoningEfforts is an explicit per-model allowlist for compatible endpoints.
+	// Nil retains the built-in OpenAI normalization; empty disables the field.
+	ReasoningEfforts []string
 }
 
 // Provider streams completions from an OpenAI-compatible chat completions API.
@@ -87,6 +92,7 @@ type Provider struct {
 	setRequestExtra       func(*http.Request)
 	disablePromptCacheKey bool
 	sessionHeader         providerio.SessionHeader
+	reasoningEfforts      []string
 }
 
 // New creates an OpenAI-compatible provider.
@@ -125,7 +131,12 @@ func New(options Options) (*Provider, error) {
 		maxTokens = 0
 	}
 
+	var reasoningEfforts []string
+	if options.ReasoningEfforts != nil {
+		reasoningEfforts = append([]string{}, options.ReasoningEfforts...)
+	}
 	return &Provider{
+		reasoningEfforts:      reasoningEfforts,
 		apiKey:                options.APIKey,
 		baseURL:               baseURL,
 		endpoint:              endpoint,
@@ -151,9 +162,13 @@ func (provider *Provider) StreamCompletion(
 	ctx context.Context,
 	request zeroruntime.CompletionRequest,
 ) (<-chan zeroruntime.StreamEvent, error) {
-	body, err := json.Marshal(provider.openAIRequest(request))
+	mapped := provider.openAIRequest(request)
+	body, err := json.Marshal(mapped)
 	if err != nil {
 		return nil, fmt.Errorf("encode OpenAI request: %w", err)
+	}
+	if value := strings.TrimSpace(os.Getenv("ZERO_REASONING_DIAGNOSTIC")); value == "1" || strings.EqualFold(value, "true") {
+		provider.logReasoningDiagnostic(mapped)
 	}
 
 	events := make(chan zeroruntime.StreamEvent, 16)
@@ -163,6 +178,35 @@ func (provider *Provider) StreamCompletion(
 	}()
 
 	return events, nil
+}
+
+// logReasoningDiagnostic reports only the already-serialized request's model and
+// effort. Strip controls before matching secrets, then bound the displayed text.
+func (provider *Provider) logReasoningDiagnostic(request chatCompletionRequest) {
+	stripControls := func(value string) string {
+		return strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}, value)
+	}
+	secrets := []string{stripControls(provider.apiKey), stripControls(provider.authHeaderValue)}
+	for _, value := range provider.customHeaders {
+		secrets = append(secrets, stripControls(value))
+	}
+	safe := func(value string) string {
+		value = redaction.RedactString(stripControls(value), redaction.Options{ExtraSecretValues: secrets})
+		if runes := []rune(value); len(runes) > 160 {
+			value = string(runes[:160]) + "…"
+		}
+		return value
+	}
+	if request.ReasoningEffort == "" {
+		_, _ = fmt.Fprintf(os.Stderr, "zero: chat request prepared model=%q reasoning_effort=<omitted>\n", safe(request.Model))
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "zero: chat request prepared model=%q reasoning_effort=%q\n", safe(request.Model), safe(request.ReasoningEffort))
 }
 
 func (provider *Provider) stream(ctx context.Context, body []byte, sessionID string, events chan<- zeroruntime.StreamEvent) {
@@ -479,10 +523,9 @@ func (provider *Provider) openAIRequest(request zeroruntime.CompletionRequest) c
 	if provider.maxTokens > 0 {
 		mapped.MaxCompletionTokens = provider.maxTokens
 	}
-	// reasoning_effort is only valid for reasoning models; callers gate it against
-	// the model's capabilities, so an empty value (the default for non-reasoning
-	// models) is simply omitted. Only forward the values the API accepts.
-	if effort := openAIReasoningEffort(request.ReasoningEffort); effort != "" {
+	// An explicit compatible-model list controls which values can be sent.
+	// Otherwise use the built-in OpenAI normalization; empty omits the field.
+	if effort := provider.reasoningEffort(request.ReasoningEffort); effort != "" {
 		mapped.ReasoningEffort = effort
 	}
 	if tier := openAIServiceTier(request.ServiceTier); tier != "" {
@@ -534,6 +577,18 @@ func normalizeToolParameters(parameters map[string]any) map[string]any {
 func promptCacheKeyDisabled() bool {
 	value := strings.TrimSpace(os.Getenv("ZERO_DISABLE_PROMPT_CACHE_KEY"))
 	return value != "" && value != "0" && !strings.EqualFold(value, "false")
+}
+
+func (provider *Provider) reasoningEffort(requested string) string {
+	if provider.reasoningEfforts == nil {
+		return openAIReasoningEffort(requested)
+	}
+	for _, effort := range provider.reasoningEfforts {
+		if strings.EqualFold(effort, strings.TrimSpace(requested)) {
+			return effort
+		}
+	}
+	return ""
 }
 
 // openAIReasoningEffort normalizes a requested effort to a value the OpenAI chat

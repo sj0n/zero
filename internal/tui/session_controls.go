@@ -58,21 +58,28 @@ type compactResultMsg struct {
 }
 
 func (m model) handleEffortCommand(args string) (model, string) {
-	args = strings.TrimSpace(strings.ToLower(args))
-	if args == "" || args == "list" {
+	args = strings.TrimSpace(args)
+	if args == "" || strings.EqualFold(args, "list") {
 		return m, m.effortText()
 	}
-	if args == "auto" {
+	if strings.EqualFold(args, "auto") {
 		m.reasoningEffort = ""
 		m = m.markProfileEffortTouched()
 		return m, m.effortStatusCard("auto", "Reasoning effort selection will follow the active model/provider defaults.")
 	}
 
-	requested := modelregistry.ReasoningEffort(args)
-	if !modelregistry.ValidReasoningEffort(requested) {
+	requested := modelregistry.ReasoningEffort(strings.ToLower(args))
+	efforts := m.availableReasoningEfforts()
+	for _, effort := range efforts {
+		if strings.EqualFold(string(effort), args) {
+			requested = effort
+			break
+		}
+	}
+	_, configured := m.providerProfile.ConfiguredReasoningEfforts(m.modelName)
+	if !configured && !modelregistry.ValidReasoningEffort(requested) {
 		return m, m.effortStatusCard(args, "Unknown reasoning effort: "+args)
 	}
-	efforts := m.availableReasoningEfforts()
 	if len(efforts) == 0 {
 		return m, m.effortStatusCard("", "Active model does not expose reasoning effort controls.")
 	}
@@ -327,6 +334,13 @@ func (m model) reconcileProfileAfterModelSwitch(efforts []modelregistry.Reasonin
 func (m model) availableReasoningEfforts() []modelregistry.ReasoningEffort {
 	if strings.TrimSpace(m.modelName) == "" {
 		return nil
+	}
+	if efforts, found := m.providerProfile.ConfiguredReasoningEfforts(m.modelName); found {
+		result := make([]modelregistry.ReasoningEffort, len(efforts))
+		for i, effort := range efforts {
+			result[i] = modelregistry.ReasoningEffort(effort)
+		}
+		return result
 	}
 	if efforts, found := m.discoveredReasoningEfforts(); found {
 		return efforts

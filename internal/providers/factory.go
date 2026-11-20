@@ -67,7 +67,14 @@ func New(profile config.ProviderProfile, options Options) (zeroruntime.Provider,
 		// instead of ignoring unknown parameters — so omit it for every
 		// openai-compatible profile. Official OpenAI keeps the field so
 		// multi-turn sessions still route to a cached-prefix replica.
+		var reasoningEfforts []string
+		if resolved.providerKind == config.ProviderKindOpenAICompatible {
+			if efforts, ok := profile.ConfiguredReasoningEfforts(profile.Model); ok {
+				reasoningEfforts = efforts
+			}
+		}
 		return openai.New(openai.Options{
+			ReasoningEfforts:      reasoningEfforts,
 			APIKey:                profile.APIKey,
 			BaseURL:               resolved.baseURL,
 			Model:                 resolved.apiModel,
@@ -164,6 +171,10 @@ func resolveCapabilities(profile config.ProviderProfile, options Options) (zeror
 		for _, effort := range registry.ReasoningEfforts(entry.ID) {
 			caps.ReasoningEfforts = append(caps.ReasoningEfforts, string(effort))
 		}
+	}
+	if efforts, configured := profile.ConfiguredReasoningEfforts(profile.Model); configured && resolved.providerKind == config.ProviderKindOpenAICompatible {
+		caps.ReasoningEfforts = append([]string{}, efforts...)
+		caps.SupportsReasoning = len(efforts) > 0
 	}
 	return caps, nil
 }

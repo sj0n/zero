@@ -6,6 +6,7 @@ Zero.
 ## User Docs
 
 - [Install](INSTALL.md)
+- [Custom OpenAI-compatible models and reasoning levels](CUSTOM_MODELS.md)
 - [Local per-model completion limits](MODEL_RPM.md)
 - [Update flow](UPDATE.md)
 - [OAuth logins and subscription-backed providers](oauth-subscriptions.md)

@@ -214,19 +214,21 @@ func (m model) newModelPicker() *commandPicker {
 		recent = append(recent, m.modelPickerRecentItem(registry, pair.Provider, pair.Model))
 	}
 	catalog := []pickerItem{}
-	// List every saved provider's models, grouped per provider (one contiguous
-	// section each), so /model shows all configured providers and you can switch
-	// across them. Dedup by group so two profiles resolving to the same provider
-	// don't produce a repeated section.
-	seenGroup := map[string]bool{}
-	for _, profile := range m.modelPickerProviders() {
-		descriptor, hasDescriptor := m.descriptorForProfile(profile)
-		group := modelPickerProviderGroup(profile, descriptor, hasDescriptor)
-		if seenGroup[group] {
-			continue
+	// Profiles may share a catalog descriptor but have different models and keys.
+	profiles := m.modelPickerProviders()
+	groups := map[string]int{}
+	for _, profile := range profiles {
+		descriptor, ok := m.descriptorForProfile(profile)
+		groups[modelPickerProviderGroup(profile, descriptor, ok)]++
+	}
+	for _, profile := range profiles {
+		items := m.savedProviderModelPickerItems(profile, activeProvider, activeModel)
+		for i := range items {
+			if groups[items[i].Group] > 1 && strings.TrimSpace(profile.Name) != "" {
+				items[i].Group += " (" + profile.Name + ")"
+			}
 		}
-		seenGroup[group] = true
-		catalog = append(catalog, m.savedProviderModelPickerItems(profile, activeProvider, activeModel)...)
+		catalog = append(catalog, items...)
 	}
 	if len(catalog) == 0 {
 		// No saved providers resolved any models: fall back to the full registry.
@@ -332,6 +334,19 @@ func (m model) savedProviderModelPickerItems(profile config.ProviderProfile, act
 		if mdl := strings.TrimSpace(profile.Model); mdl != "" {
 			raw = append(raw, pickerItem{Label: modelPickerDisplayName(mdl, ""), Value: mdl})
 		}
+	}
+
+	// Configured models remain available when discovery fails or omits them.
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		seen[item.Value] = true
+	}
+	for _, model := range profile.Models {
+		if model.ID == "" || seen[model.ID] {
+			continue
+		}
+		raw = append(raw, pickerItem{Label: modelPickerDisplayName(model.ID, ""), Value: model.ID})
+		seen[model.ID] = true
 	}
 
 	out := make([]pickerItem, 0, len(raw))
